@@ -1,0 +1,390 @@
+---
+title: "Burnout_Meta_Vitality"
+author: "H.L. Glandorf"
+date: '2022-07-08'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Burnout Outcomes Meta analysis: Vitality
+
+```{r, warning=FALSE}
+library("robumeta")
+library("metafor")
+library("dplyr")
+library(readxl)
+library(metaviz)
+library(esc)
+library(ggplot2)
+metadat <- read_excel("metadat.xlsx", col_types = c("numeric", "text", "numeric", "numeric", "text", "text", "text", "text", "text", "numeric", "numeric", "text"))
+```
+
+Prepare the data 
+
+```{r}
+dat <- escalc(measure = "ZCOR", ri=corr, ni=sample, data=metadat) # calculate fisher's z score and variance
+dat <- dat %>% mutate(ssize_invert = 1/sample) # inverting the sample size for later use in moderation analyses
+```
+
+Creating separate frames for different constructs (here: vitality)
+
+```{r}
+##vitality
+v_dat <- dat %>% 
+  filter(outcome=="vitality") %>% # filtering the data for vitality as an outcome only
+  filter(!is.na(yi)) # filtering out missing values in fisher's z score
+```
+
+Three-level meta-analysis model (here: vitality)
+
+Simple model
+```{r}
+
+mod_v <- rma.mv(yi = yi, # specify fisher's z
+                V = vi, # specify variance
+                slab = authors, # specify authors
+                data = v_dat, # specify data set
+                level = 95, # specify confidence level
+                random = list(~ 1 | st_id, # specify random effects (here: study id and effect size id)
+                ~ 1 | eff_id), 
+                method = "REML", # specify method for determining solution (here: restricted maximum likelihood)
+                tdist = TRUE) # specify whether t-distribution should be used or not
+summary(mod_v) # show summary of the multilevel meta model
+convert_z2r(mod_v$b) # convert to correlation r
+predict.intervals_mod_v <- predict(mod_v, digits = 2, level = .95) # determine  prediction intervals
+print(predict.intervals_mod_v) # show prediction intervals
+```
+
+Assessing heterogeneity at each level
+
+```{r}
+# to see whether the within-study variance is significantly different from zero, we first create a model where the within-study variance is fixed to zero
+mod_v.within <- rma.mv(yi, vi, 
+                         data=v_dat, 
+                         sigma2 = c(NA,0), # specifies the variance component and forces the within-study variance to be zero
+                         tdist = TRUE, 
+                         random = list(~ 1 | st_id, 
+                                       ~ 1 | eff_id))
+
+mod_v.within.result <- summary(mod_v.within)
+
+# we then do the same with the between-study variance (trsting whether sig different from zero)
+mod_v.between <- rma.mv(yi, vi, 
+                          data=v_dat, 
+                          sigma2 = c(0,NA), #force variance component of level 3 to be zero
+                          tdist = TRUE, 
+                          random = list(~ 1 | st_id, 
+                                        ~ 1 | eff_id))
+mod_v.between.result <- summary(mod_v.between)
+
+# we can then compare the fit of the full model to the within and the between model
+# if this is significant then the within/between study variance is significantly different from 0 as the fit of the full model is significantly better than the fit of the reduced model 
+# Note from OG paper: The asymptotic distribution is no longer 1 degree of freeom, so p-value needs to be divided by 2
+mod_v.within.anova <- anova(mod_v, mod_v.within)
+mod_v.within.anova
+mod_v.between.anova <- anova(mod_v, mod_v.between)
+mod_v.between.anova
+# no meaningful partitioning between levels, since all heterogeneity sits at the between level and almost none at the within
+
+# define function to calculate the I2 statistic (% if between-studies variation that is due to true differences/% of total variance that is due to heterogeneity)
+calculate_I2 <- function(v_dat, mod_v){
+  W <- diag(1/v_dat$vi) # define weight matrix (gives more weight to studies with smaller variances)
+  X <- model.matrix(mod_v) # design matrix with including predictors 
+  P <- W - W %*% X %*% solve(t(X) %*% W %*% X) %*% t(X) %*% W # projection matrix to project the weights onto the orthogonal space to the fixed effects specified in the model
+  I2_statistic <- 100 * sum(mod_v$sigma2) / (sum(mod_v$sigma2) + (mod_v$k-mod_v$p)/sum(diag(P))) # then calculate I2 based on defined matrices above
+  return (I2_statistic)
+}
+
+I2 <- calculate_I2(v_dat, mod_v) # use function to calculate I2
+I2
+
+# now, we need to break down how much of the total variance can be attributed to between-cluster heterogeneity and how much can be attributed to within-cluster heterogeneity
+# defining a function to update the I2
+calculate_I2update <- function(v_dat, mod_v){
+  W <- diag(1/v_dat$vi)
+  X <- model.matrix(mod_v)
+  P <- W - W %*% X %*% solve(t(X) %*% W %*% X) %*% t(X) %*% W
+  I2update_statistic <- 100 * mod_v$sigma2 / (sum(mod_v$sigma2) + (mod_v$k-mod_v$p)/sum(diag(P))) # I2 update calculation no longer uses sum in the first numerator
+  return (I2update_statistic)
+}
+
+I2update <- calculate_I2update(v_dat, mod_v) 
+I2update
+# 1st value printed = total variance due to between-cluster heterogeneity
+# 2nd value printed = total variance due to within-cluster heterogeneity
+# reflects results from anova above, most variance at between level, almost none at the within
+```
+
+Assessing outliers and influential cases
+
+```{r}
+# first, we look at Level 3 (between level) for outliers in terms of the studies included
+cooks.distance (mod_v, cluster=v_dat$st_id) # calculate cooks distance for study id clusters
+plot(cooks.distance(mod_v, cluster=v_dat$st_id), type="o", pch=19) # plot
+# based on the 4/N rule, there are no outlier studies
+
+# now, looking at the individual effects (level 2)
+# calculate residuals
+resid_d <- residuals(mod_v) %>%
+  scale(center = F, scale = T) ##and convert the residuals to z-scores
+
+# plot residuals
+par(mar=c(6,6,4,4))  # change margins to use full space
+plot(resid_d, type="p", pch=19)
+png(filename = "ResidualsPlotVitality.png", 
+    width = 800, height = 640, 
+    pointsize = 12, res = 120)
+plot(resid_d, type="p", pch=19)
+dev.off() #this executes the plotting
+
+# view studies with outlier residuals
+outliers_resid_d <- resid_d %>%
+  cbind(v_dat$authors) %>%                # bind study names for reference
+  subset(resid_d > 3.0 | resid_d < - 3.0) # subset outliers
+
+# Create new dataframe with residual outliers removed
+# remove residual outliers 
+v_datresidualoutliers_dropped <- v_dat %>%
+  subset(subset = -3.0 < resid_d & resid_d < 3.0)
+View(v_datresidualoutliers_dropped)
+
+mod_v.residual <- rma.mv(yi, vi, 
+                           data = v_datresidualoutliers_dropped,
+                           level = 95,
+                           method = "REML", 
+                           slab = authors, 
+                           tdist = TRUE, 
+                           random = list(~ 1 | st_id, 
+                                         ~ 1 | eff_id)) 
+summary(mod_v.residual) # summary of meta without outliers
+
+# calculate cook's distance at individual effects (level 2) rather than studies (level 3)
+cooks_d <- cooks.distance(mod_v) # note: this step can take time to execute
+plot(cooks_d, type="p", pch=19)
+png(filename = "CooksDistancePlotVitality.png", 
+    width = 800, height = 640, 
+    pointsize = 12, res = 120)
+plot(cooks_d, type="p", pch=19)
+dev.off() # this executes the plotting
+
+# View outliers with Cooks > 3 * mean
+outliers_cooks_d <- cooks_d %>% 
+  cbind(v_dat$authors) %>%           # bind study names for reference
+  subset(cooks_d > 3.0*mean(cooks_d)) # subset outliers
+
+## like above, we are creating a new dataframe with cooks outliers removed
+v_dat_cooksoutliers_dropped <- v_dat %>%
+  cbind(cooks_d) %>%
+  filter(cooks_d < 3.0*mean(cooks_d))
+
+View(v_dat_cooksoutliers_dropped)
+
+mod_v.cook <- rma.mv(yi, vi, 
+                       data = v_dat_cooksoutliers_dropped,
+                       level = 95,
+                       method = "REML", 
+                       slab = authors, 
+                       tdist = TRUE, 
+                       random = list(~ 1 | st_id, 
+                                     ~ 1 | eff_id))
+summary(mod_v.cook)
+# adie et al, chen&chang, zhang are outliers
+```
+
+Assessing meta bias
+
+```{r}
+# starting off with creating functions to reduce coding
+# anova: does the moderator have significantly different effects at each level?
+# meta_anova model tells us if the moderator is significant/interesting
+# intercept = variable coded as 0/alphabetically first, and slopes = different levels of the moderator
+meta_anova <- function(v_dat_cooksoutliers_dropped, moderator){
+  anova_result <- rma.mv(yi, vi,
+                         data = v_dat_cooksoutliers_dropped,
+                         level = 95,
+                         method = "REML",
+                         tdist = TRUE,
+                         mods = ~moderator,
+                         random = ~ 1 | st_id/eff_id)
+  return(anova_result)
+}
+
+# mods: is each individual moderator level significantly different from 0?
+# meta_mods removes the intercept to tell us if each level of the moderator is significantly different from zero
+meta_mods <- function(v_dat_cooksoutliers_dropped, moderator){
+  mods_result <- rma.mv(yi, vi,
+                        data = v_dat_cooksoutliers_dropped,
+                        level = 95,
+                        method = "REML",
+                        tdist = TRUE,
+                        mods = ~moderator-1, 
+                        random = ~1 | st_id/eff_id)
+  return(mods_result)
+}
+
+# cont: function for continuous moderators
+meta_cont <- function(v_dat_cooksoutliers_dropped, moderator){
+  mods_result <- rma.mv(yi, vi,
+                        data = v_dat_cooksoutliers_dropped,
+                        level = 95,
+                        method = "REML",
+                        tdist = TRUE,
+                        mods = moderator,# this specification is the only difference in code compared to categorical moderators
+                        random = ~1 | st_id/eff_id)
+  return(mods_result)
+}
+
+# create a function for centering continuous moderators
+center_scale <- function(x) {
+  scale(x, scale = FALSE)
+}
+
+# now, we examine methodological factors as moderations fo the overall pooled effect
+# starting with a multilevel extension of egger test
+# convert variance of effects into standard error then run the moderation model
+v_dat_cooksoutliers_dropped$sd <- sqrt(v_dat_cooksoutliers_dropped$vi)
+v_dat_cooksoutliers_dropped$nsqrt <- sqrt(v_dat_cooksoutliers_dropped$sample)
+v_dat_cooksoutliers_dropped$sei <- v_dat_cooksoutliers_dropped$sd/v_dat_cooksoutliers_dropped$nsqrt
+
+multilevel.egger <- meta_anova(v_dat_cooksoutliers_dropped, v_dat_cooksoutliers_dropped$sei) #multilevel Egger test
+multilevel.egger
+
+# continuous moderators below
+v_dat_cooksoutliers_dropped$mod_vample_size<-center_scale(v_dat_cooksoutliers_dropped$ssize_invert) #mean center prior to analysis
+sample.size <- meta_cont(v_dat_cooksoutliers_dropped, v_dat_cooksoutliers_dropped$mod_vample_size) #sample size
+sample.size
+```
+
+Substantive moderators: seeing whether including the moderators improves the model
+
+```{r}
+## first execute all of the moderator analyses to see which ones are interesting 
+
+## all anovas for all moderator categories 
+# measure of vitality
+outcome1_anova <- meta_anova(v_dat_cooksoutliers_dropped, v_dat_cooksoutliers_dropped$o_measure) 
+outcome1_anova
+# ABQ dimension
+outcome3_anova <- meta_anova(v_dat_cooksoutliers_dropped, v_dat_cooksoutliers_dropped$predictor) 
+outcome3_anova
+# design type
+outcome4_anova <- meta_anova(v_dat_cooksoutliers_dropped, v_dat_cooksoutliers_dropped$design) 
+outcome4_anova
+
+# all individual moderator analyses
+# measure of vitality
+outcome1_mods <- meta_mods(v_dat_cooksoutliers_dropped, v_dat_cooksoutliers_dropped$o_measure) 
+outcome1_mods
+# ABQ dimension
+outcome3_mods <- meta_mods(v_dat_cooksoutliers_dropped, v_dat_cooksoutliers_dropped$predictor) 
+outcome3_mods
+# design type
+outcome4_mods <- meta_mods(v_dat_cooksoutliers_dropped, v_dat_cooksoutliers_dropped$design) 
+outcome4_mods
+
+##there are no interesting moderators
+```
+
+Visualisation
+
+```{r}
+#============
+# Forest plot
+#============
+
+ks <- c(40) # number of effect sizes in dataset
+for (k in ks) {
+  png(paste0("vitality forest_k cook=",formatC(k, format="f", flag="0", width=3, digits=0), res=1000, ".png", sep=""), 
+      height = 200 + 30*k^.90, width = 1500) # width and height in pixels rather than mm/inches
+  forest(mod_v.cook,
+         order ="obs", # order by effect size
+         level = 95,
+         xlab = "Performance",
+         digits=c(2,2),
+         addcred = TRUE, # bounds of the credibility/prediction interval
+         xlim=c(-2.5,5), # horizontal limits of the plot region
+         alim=c(-2,4), # actual x-axis limits
+         at=(c(-2.00, -1.50, -1.00, -0.50, 0, 0.50, 1, 1.50, 2.00, 2.50, 3.00, 3.50, 4.00)), # position of the x-axis tick marks and corresponding labels
+         efac=40/(k+10), # vertical expansion factor for confidence interval limits and arrows
+         cex= 1.3, # character and symbol expansion factor
+         ylim=c(-1,k+3)) # y limits of the plot
+  op <- par(font=4) # bold italic font
+  text(-2.5, k+2, "Author(s)", pos=4, cex=1.5) 
+  text(5, k+2, "Hedges' g [95% CI]", pos=2, cex=1.5)
+  par(op)
+  dev.off()
+}
+
+# save as a PDF file rather than PNG
+pdf("vitality forest cook.pdf", width = 17, height = 15, pointsize = 10)
+k <- 40
+forest(mod_v.cook,
+       order ="obs", # order by effect size
+       level = 95,
+       xlab = "Performance",
+       digits=c(2,2),
+       addcred = TRUE, # bounds of the credibility/prediction interval
+       xlim=c(-2.5,5), # horizontal limits of the plot region
+       alim=c(-2,4), # actual x-axis limits
+       at=(c(-2.00, -1.50, -1.00, -0.50, 0, 0.50, 1, 1.50, 2.00, 2.50, 3.00, 3.50, 4.00)), # position of the x-axis tick marks and corresponding labels
+       efac=40/(k+10), # vertical expansion factor for confidence interval limits and arrows
+       cex= 1.3, # character and symbol expansion factor
+       ylim=c(-1,k+3)) # y limits of the plot
+op <- par(font=4) # bold italic font
+text(-2.5, k+2, "Author(s)", pos=4, cex=1.5) 
+text(5, k+2, "Hedges' g [95% CI]", pos=2, cex=1.5)
+par(op)
+dev.off()
+
+#==============================
+# Funnel plot to visualise bias
+#==============================
+
+# see this article for guidance on interpretation: https://www.bmj.com/content/343/bmj.d4002
+
+cols <- palette.colors(length(unique(v_dat_cooksoutliers_dropped$st_id)), palette="Alphabet") # use different colours to visualise effects from same study
+cols <- cols[as.numeric(factor(v_dat_cooksoutliers_dropped$st_id))]
+par(cex = 0.3, font = 1) #make small, non-bold characters
+par(mar=c(4,4,1,2)) #make margins small
+#png(filename = "funnel-overall.png", width = 1400, height = 800) #low quality image
+#tiff(filename = "funnel-overall.tiff", width = 5600, height = 3200, res = 700, pointsize = 7) #high quality image
+pdf("funnel-vitality-cook.pdf", width = 11.2, height = 6.4, pointsize = 10) #pdf (preferred format)
+funnel(mod_v.cook,
+       level=c(90, 95, 99), #plot 90%,95%,99% CI's
+       cex = 1,
+       shade=c("white", "gray", "darkgray"), #shade of CI
+       xlab = "Effect size (Hedge's g)", #x axis label
+       steps = 5,
+       ylim = c(0,1), #y axis limits
+       pch = 18, #changed to diamonds
+       cex.axis = 1,
+       cex.main = 1,
+       cex.lab = 1,
+       col = cols)
+dev.off() #this executes the plotting step
+
+# create sunset enhanced funnel plot to visualise the power of each effect in a meta-analysis
+# see this blog for a user-friendly guide for interpretation: https://www.dsquintana.blog/meta-analysis-power-plot/ 
+pdf("sunset funnel-vitality-cook.pdf", width = 11.2, height = 6.4, pointsize = 10) 
+viz_sunset(mod_v.cook, 
+           text_size = 5,
+           point_size = 3,
+           true_effect = -.15) # true effect that should be assumed from power calculations
+dev.off() # this executes the plotting step
+
+# Contour enhanced funnel plot with Eggers regression line and trim and fill method
+# noting this visualisation occurs for individual effects (level 2) rather than studies (level 3)
+pdf("contour enhanced funnel-vitality-cook.pdf", width = 11.2, height = 6.4, pointsize = 10) 
+viz_funnel(mod_v.cook,
+           trim_and_fill = T,
+           trim_and_fill_side = "left",
+           egger = T,
+           point_size = 3,
+           xlab="Hedges' g",
+           method = "REML")
+dev.off() # this executes the plotting step
+```
+
