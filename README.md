@@ -1,4 +1,4 @@
-# PhD_Study1
+# PhD Study 1
 
 This repository provides the R code and datafile for the first study of my PhD, a multilevel meta-analysis of the associations between burnout and a number of health variables (anxiety, depression, physical symptoms, satisfaction, vitality). 
 
